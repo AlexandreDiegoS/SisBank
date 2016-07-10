@@ -1,0 +1,155 @@
+{-
+	SisBank - Formal Methods 2016.1
+
+	Authors:
+		- Airton Júnior
+		- Alexandre Silva
+		- Thiago Ribeiro
+-}
+
+-- Constants
+MINVAL = 0
+MAXVAL = 5
+SUBINT = {MINVAL..3}
+
+datatype ID_CLIENT = CLIENT_1 | CLIENT_2
+datatype ID_TERMINAL = AGC_1 | AGC_2 | ATM_1 | ATM_2 | ATM_3
+subtype ID_AGC = AGC_1 | AGC_2
+subtype ID_ATM = ATM_1 | ATM_2 | ATM_3
+datatype OP = OPEN | CLOSE | CREDIT | DEBIT
+datatype RETURN = OK | NOT_OK
+
+channel channel_server : OP.ID_TERMINAL.ID_CLIENT.SUBINT
+channel channel_agc : OP.ID_AGC.ID_CLIENT.SUBINT
+channel channel_atm : {CREDIT,DEBIT}.ID_ATM.ID_CLIENT.SUBINT
+channel channel_CLIENT : ID_TERMINAL.RETURN
+
+ACCESS_TERMINAL(id_terminal) = 
+	(
+		id_terminal == ATM_1 &
+			channel_atm?OP.ATM_1?id_client?value ->
+			channel_server!OP!id_terminal!id_client!value ->
+			channel_client?id_terminal?RETURN -> 
+			ACCESS_TERMINAL(id_terminal)
+	)
+	[]
+	(
+		id_terminal == ATM_2 &
+			channel_atm?OP.ATM_2?id_client?value ->
+			channel_server!OP!id_terminal!id_client!value ->
+			channel_client?id_terminal?RETURN -> 
+			ACCESS_TERMINAL(id_terminal)
+	)
+	[]
+	(
+		id_terminal == ATM_3 &
+			channel_atm?OP.ATM_3?id_client?value ->
+			channel_server!OP!id_terminal!id_client!value ->
+			channel_client?id_terminal?RETURN -> 
+			ACCESS_TERMINAL(id_terminal)
+	)
+	[]
+	(
+		id_terminal == AGC_1 &
+			channel_agc?OP.AGC_1?id_client?value ->
+			channel_server!OP!id_terminal!id_client!value ->
+			channel_client?id_terminal?RETURN -> 
+			ACCESS_TERMINAL(id_terminal)
+	)
+	[]
+	(
+		id_terminal == AGC_2 &
+			channel_agc?OP.AGC_2?id_client?value ->
+			channel_server!OP!id_terminal!id_client!value ->
+			channel_client?id_terminal?RETURN -> 
+			ACCESS_TERMINAL(id_terminal)
+	)
+
+TERMINAL = 
+	ACCESS_TERMINAL(AGC_1)-- ||| ACCESS_TERMINAL(AGC_2)
+	|||
+	ACCESS_TERMINAL(ATM_1) ||| ACCESS_TERMINAL(ATM_2)-- ||| ACCESS_TERMINAL(ATM_3)
+
+SERVER(accounts, clients) = 
+		channel_server?OP?id_terminal?id_client?value ->
+		(
+			if OP == OPEN then
+				if member(id_client, clients) then
+					channel_client!id_terminal!NOT_OK -> SERVER(accounts, clients)
+				else
+					channel_client!id_terminal!OK ->
+					SERVER(union({(id_client, value)}, accounts), union({id_client}, clients))
+			else if OP == CLOSE then
+				if not member(id_client, clients) then
+					channel_client!id_terminal!NOT_OK -> SERVER(accounts, clients)
+				else
+					CLOSE_ACCOUNT(clients, seq(accounts), accounts, id_terminal, id_client)
+			else if OP == CREDIT then
+				if value <= MINVAL or not member(id_client, clients) then
+					channel_client!id_terminal!NOT_OK -> SERVER(accounts, clients)
+				else if (BALANCE(seq(accounts), id_client) + value) > MAXVAL then
+					channel_client!id_terminal!NOT_OK -> SERVER(accounts, clients)
+				else
+					channel_client!id_terminal!OK -> 
+       				SERVER(
+        					 union({(client, balance + value) | (client, balance) <- accounts, client == id_client},
+         				  		   {(client, balance) | (client, balance) <- accounts, client != id_client}),
+        					 clients)
+			else
+				if value <= MINVAL or not member(id_client, clients) then
+					channel_client!id_terminal!NOT_OK -> SERVER(accounts, clients)
+				else if (BALANCE(seq(accounts), id_client) - value) < MINVAL then
+					channel_client!id_terminal!NOT_OK -> SERVER(accounts, clients)
+				else
+					channel_client!id_terminal!OK -> 
+       				SERVER(
+        					 union({(client, balance - value) | (client, balance) <- accounts, client == id_client},
+         				  		   {(client, balance) | (client, balance) <- accounts, client != id_client}),
+        					 clients)
+       	)
+
+BALANCE(<>, id_client) = -1
+BALANCE(<(id, balance)>^accountsTail, id_client) = 
+	if id == id_client then
+		balance
+	else
+		BALANCE(accountsTail, id_client)
+
+CLOSE_ACCOUNT(clients, <(id,balance)>^accountsTail, accounts, id_terminal, id_client) = 
+	if id == id_client then
+		if balance == 0 then
+			channel_client!id_terminal!OK -> 
+				SERVER({(client, balance) | (client, balance) <- accounts, client != id_client},
+						 {client | client <- clients, client != id_client})
+		else 
+			channel_client!id_terminal!NOT_OK -> SERVER(accounts, clients)
+	else
+		CLOSE_ACCOUNT(clients, accountsTail, accounts, id_terminal, id_client)
+
+USER_1 = 
+	channel_agc!OPEN!AGC_1!CLIENT_1!1 -> 
+	channel_atm!CREDIT!ATM_1!CLIENT_1!2 -> 
+	channel_atm!DEBIT!ATM_2!CLIENT_1!3 -> SKIP
+
+USER_2 = 
+	channel_agc!OPEN!AGC_1!CLIENT_2!2 -> 
+	channel_atm!DEBIT!ATM_1!CLIENT_2!1 -> 
+	channel_atm!DEBIT!ATM_2!CLIENT_2!1 -> SKIP
+
+BANK = TERMINAL
+		[| {|channel_server, channel_client|} |]
+		SERVER({}, {})
+
+EXEMPLE = 
+		BANK
+		[| {|channel_atm, channel_agc|} |]
+		(USER_1 ||| USER_2)
+
+assert SERVER({},{}) :[deadlock free]
+assert SERVER({},{}) :[deterministic]
+assert BANK :[deadlock free]
+assert BANK :[deterministic]
+assert EXEMPLE :[deadlock free]
+assert EXEMPLE :[deterministic]
+assert USER_1 :[deadlock free]
+assert USER_2 :[deadlock free]
